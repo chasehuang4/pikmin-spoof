@@ -64,17 +64,23 @@ class LocationController:
                         self.status = 'Phone connected successfully'
                         print('  Device connected. Ready to spoof.')
 
+                        last_sent: tuple | None = None
                         while True:
-                            await self._event.wait()
-                            self._event.clear()
+                            # Wait up to 1 s for a new location; on timeout, resend
+                            # the last known coordinate to hold the GPS lock
+                            try:
+                                await asyncio.wait_for(self._event.wait(), timeout=1.0)
+                                self._event.clear()
+                            except asyncio.TimeoutError:
+                                pass
 
                             with self._lock:
-                                if self._latest is None:
-                                    continue
-                                lat, lon = self._latest
-                                self._latest = None
+                                if self._latest is not None:
+                                    last_sent = self._latest
+                                    self._latest = None
 
-                            await loc.set(lat, lon)
+                            if last_sent:
+                                await loc.set(last_sent[0], last_sent[1])
 
         except Exception as e:
             self.connected = False
@@ -101,6 +107,23 @@ def load_favorites():
 def save_favorites():
     with open(FAVORITES_FILE, 'w') as f:
         json.dump(favorites, f, indent=2)
+
+
+# ── Last Position ───────────────────────────────────────────────────────────────
+
+POSITION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'last_position.json')
+
+def load_position() -> tuple[float, float]:
+    try:
+        with open(POSITION_FILE) as f:
+            d = json.load(f)
+            return float(d['lat']), float(d['lon'])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        return 37.7749, -122.4194  # default: San Francisco
+
+def save_position(lat: float, lon: float):
+    with open(POSITION_FILE, 'w') as f:
+        json.dump({'lat': lat, 'lon': lon}, f)
 
 
 # ── HTML ───────────────────────────────────────────────────────────────────────
@@ -317,7 +340,12 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const marker = L.marker([37.7749, -122.4194], { draggable: true }).addTo(map);
 marker.on('dragstart', () => { stopWalk(); stopJoystick(); });
 marker.on('dragend', () => {
-  const { lat, lng } = marker.getLatLng();
+  const pos = marker.getLatLng();
+  const lat = pos.lat;
+  // Normalize longitude to [-180, 180] — Leaflet returns >180 or <-180 when
+  // the user drags across world-wrap copies (e.g. dragging to Asia from SF)
+  const lng = ((pos.lng % 360) + 540) % 360 - 180;
+  marker.setLatLng([lat, lng]);
   updateDisplay(lat, lng);
   sendLocation(lat, lng);
   document.getElementById('lat').value = lat.toFixed(6);
@@ -542,15 +570,17 @@ function tickWalk() {
 }
 
 map.on('click', e => {
-  document.getElementById('lat').value = e.latlng.lat.toFixed(6);
-  document.getElementById('lon').value = e.latlng.lng.toFixed(6);
-  addWaypoint(e.latlng.lat, e.latlng.lng);
+  const lat = e.latlng.lat;
+  const lng = ((e.latlng.lng % 360) + 540) % 360 - 180;
+  document.getElementById('lat').value = lat.toFixed(6);
+  document.getElementById('lon').value = lng.toFixed(6);
+  addWaypoint(lat, lng);
 });
 
 // ── Joystick ──────────────────────────────────────────────
 const joystick = document.getElementById('joystick');
 const knob = document.getElementById('knob');
-const MAX_R = 48;
+const MAX_R = 35; // (joystick_width - knob_width) / 2 = (110 - 40) / 2
 
 function moveKnob(e) {
   const r = joystick.getBoundingClientRect();
@@ -558,13 +588,13 @@ function moveKnob(e) {
   let dy = e.clientY - (r.top + r.height/2);
   const dist = Math.hypot(dx, dy);
   if (dist > MAX_R) { dx = dx/dist*MAX_R; dy = dy/dist*MAX_R; }
-  knob.style.left = (75-27+dx)+'px';
-  knob.style.top  = (75-27+dy)+'px';
+  knob.style.left = (35+dx)+'px';
+  knob.style.top  = (35+dy)+'px';
   jVec = { dx: dx/MAX_R, dy: dy/MAX_R };
 }
 
 function resetKnob() {
-  knob.style.left = '48px'; knob.style.top = '48px';
+  knob.style.left = '35px'; knob.style.top = '35px';
   jVec = { dx: 0, dy: 0 };
 }
 
@@ -658,6 +688,17 @@ async function goToFavorite(idx) {
 }
 
 loadFavorites();
+
+async function loadInitPosition() {
+  try {
+    const res = await fetch('/position');
+    const d = await res.json();
+    updateDisplay(d.lat, d.lon);
+    document.getElementById('lat').value = d.lat.toFixed(6);
+    document.getElementById('lon').value = d.lon.toFixed(6);
+  } catch(e) {}
+}
+loadInitPosition();
 </script>
 </body>
 </html>"""
@@ -672,6 +713,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/favorites':
             data = json.dumps(favorites).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self.path == '/position':
+            lat, lon = load_position()
+            data = json.dumps({'lat': lat, 'lon': lon}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -705,6 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             lat, lon = body['lat'], body['lon']
             if controller:
                 controller.set_location(lat, lon)
+            save_position(lat, lon)
             data = {
                 'ok': True,
                 'status': controller.status if controller else 'ok'

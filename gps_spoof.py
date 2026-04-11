@@ -94,19 +94,25 @@ controller: LocationController | None = None
 # ── Favorites ──────────────────────────────────────────────────────────────────
 
 FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'favorites.json')
-favorites: list = []
+folders: list = []  # [{ "name": str, "spots": [{ "icon": str, "name": str, "lat": float, "lon": float }] }]
 
 def load_favorites():
-    global favorites
+    global folders
     try:
         with open(FAVORITES_FILE) as f:
-            favorites = json.load(f)
+            data = json.load(f)
+        if isinstance(data, list):  # migrate old flat format
+            folders = [{'name': 'General', 'spots': data}]
+        elif isinstance(data, dict) and 'folders' in data:
+            folders = data['folders']
+        else:
+            folders = [{'name': 'General', 'spots': []}]
     except (FileNotFoundError, json.JSONDecodeError):
-        favorites = []
+        folders = [{'name': 'General', 'spots': []}]
 
 def save_favorites():
     with open(FAVORITES_FILE, 'w') as f:
-        json.dump(favorites, f, indent=2)
+        json.dump({'folders': folders}, f, indent=2)
 
 
 # ── Last Position ───────────────────────────────────────────────────────────────
@@ -214,19 +220,103 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
 }
 .hint { font-size: 11px; color: #636366; text-align: center; margin-top: 8px; }
 #map { flex: 1; }
-.fav-save-row { display: flex; gap: 8px; margin-bottom: 10px; }
-.fav-save-row input { flex: 1; }
+/* ── Favorites: save form ── */
+.fav-save-card {
+  background: #1c1c1e; border: 1px solid #3a3a3c; border-radius: 10px;
+  padding: 10px; margin-bottom: 14px;
+}
+.fav-save-sublabel { font-size: 10px; color: #636366; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.fav-save-row1 { display: flex; gap: 6px; margin-bottom: 6px; align-items: center; }
+.fav-save-row2 { display: flex; gap: 6px; align-items: center; }
+.fav-save-row1 input { flex: 1; }
+/* Icon picker trigger */
+.icon-picker-wrap { position: relative; flex-shrink: 0; }
+.icon-picker-btn {
+  display: flex; align-items: center; gap: 4px;
+  background: #2c2c2e; border: 1px solid #48484a; border-radius: 8px;
+  padding: 6px 8px; cursor: pointer; flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+.icon-picker-btn:hover { border-color: #636366; background: #333335; }
+.icon-picker-btn.open { border-color: #0a84ff; }
+.icon-emoji { font-size: 16px; line-height: 1; }
+.picker-caret { font-size: 8px; color: #636366; transition: transform 0.2s; line-height: 1; margin-top: 1px; }
+.icon-picker-btn.open .picker-caret { transform: rotate(180deg); }
+/* Icon picker popup */
+.icon-picker-popup {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  background: #2c2c2e; border: 1px solid #48484a; border-radius: 10px;
+  padding: 6px; gap: 2px; z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+.icon-picker-popup.open { display: flex; }
+.icon-picker-popup button {
+  background: none; font-size: 20px; padding: 6px 8px; border-radius: 8px; line-height: 1;
+  cursor: pointer; transition: background 0.15s;
+}
+.icon-picker-popup button:hover { background: #3a3a3c; }
+/* Folder dropdown */
+.folder-select {
+  flex: 1; padding: 6px 8px;
+  background: #1c1c1e; border: 1px solid #3a3a3c;
+  border-radius: 8px; color: #fff; font-size: 12px; outline: none; cursor: pointer;
+  transition: border-color 0.15s;
+}
+.folder-select:hover { border-color: #636366; }
+.folder-select option { background: #2c2c2e; }
+/* Spot items */
 .fav-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; background: #1c1c1e;
-  border-radius: 8px; margin-bottom: 6px;
+  padding: 8px 10px; background: #242426;
+  border-radius: 8px; margin-bottom: 5px;
 }
+.fav-icon { font-size: 15px; flex-shrink: 0; }
 .fav-info { flex: 1; min-width: 0; }
 .fav-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fav-coords { font-size: 10px; color: #636366; font-family: monospace; margin-top: 2px; }
 .fav-actions { display: flex; gap: 5px; flex-shrink: 0; }
-.btn-sm { padding: 5px 9px; font-size: 12px; }
-#fav-empty { font-size: 11px; color: #636366; text-align: center; padding: 4px 0; }
+.btn-sm { padding: 5px 9px; font-size: 12px; cursor: pointer; }
+/* Folder groups */
+.folder-group { margin-bottom: 6px; }
+.folder-header {
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 8px; background: #1c1c1e; border-radius: 8px;
+  cursor: pointer; user-select: none;
+  transition: background 0.15s;
+}
+.folder-header:hover { background: #242426; }
+/* Triangle: ▼ = open, ▶ = collapsed. Start with ▼ (open). Rotate to ▶ when closed. */
+.folder-toggle {
+  font-size: 9px; color: #8e8e93; transition: transform 0.2s;
+  display: inline-block; width: 10px; flex-shrink: 0; transform: rotate(0deg);
+}
+.folder-toggle.collapsed { transform: rotate(-90deg); }
+.folder-name-text { flex: 1; font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-name-input {
+  flex: 1; background: transparent; border: none; border-bottom: 1px solid #0a84ff;
+  color: #fff; font-size: 13px; font-weight: 600; outline: none; padding: 0 2px; min-width: 0;
+}
+.btn-icon {
+  background: none; color: #636366; padding: 3px 5px; font-size: 11px; border-radius: 4px;
+  flex-shrink: 0; cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.btn-icon:hover { background: #3a3a3c; color: #aeaeb2; }
+.folder-spots { padding: 6px 0 2px 4px; display: none; }
+.folder-spots.open { display: block; }
+.fav-empty-folder { font-size: 11px; color: #636366; padding: 6px 8px; font-style: italic; }
+.add-folder-btn {
+  width: 100%; background: none; color: #636366; border: 1px dashed #3a3a3c;
+  margin-top: 6px; padding: 8px; font-size: 12px; border-radius: 8px; font-weight: 500;
+  cursor: pointer; transition: color 0.15s, border-color 0.15s;
+}
+.add-folder-btn:hover { color: #aeaeb2; border-color: #636366; }
+.add-folder-inline { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.new-folder-input {
+  flex: 1; padding: 7px 10px;
+  background: #1c1c1e; border: 1px solid #0a84ff;
+  border-radius: 8px; color: #fff; font-size: 12px; outline: none;
+}
+#fav-global-empty { font-size: 11px; color: #636366; text-align: center; padding: 6px 0; }
 .map-overlay {
   background: rgba(28,28,30,0.82);
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
@@ -287,14 +377,29 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
   </div>
 
   <div class="section">
-    <div class="section-label">Favorites</div>
-    <div class="fav-save-row">
-      <input type="text" id="fav-name" placeholder="Name this spot…">
-      <button class="btn-blue btn-sm" onclick="saveFavorite()">Save</button>
+    <div class="section-label">Saved Spots</div>
+    <div class="fav-save-card">
+      <div class="fav-save-sublabel">Save current location</div>
+      <div class="fav-save-row1">
+        <div class="icon-picker-wrap">
+          <button id="icon-btn" class="icon-picker-btn" onclick="toggleIconPicker(event)" title="Choose icon">
+            <span id="icon-emoji" class="icon-emoji">🌸</span>
+            <span class="picker-caret">▼</span>
+          </button>
+          <div id="icon-picker" class="icon-picker-popup">
+            <button onclick="selectIcon('🌸')" title="Flower">🌸</button>
+            <button onclick="selectIcon('📮')" title="Post Card">📮</button>
+            <button onclick="selectIcon('🍄')" title="Mushroom">🍄</button>
+          </div>
+        </div>
+        <input type="text" id="fav-name" placeholder="Name this spot…">
+      </div>
+      <div class="fav-save-row2">
+        <select id="fav-folder" class="folder-select"></select>
+        <button class="btn-blue btn-sm" onclick="saveFavorite()">Save</button>
+      </div>
     </div>
-    <div id="fav-list">
-      <div id="fav-empty">No favorites saved yet</div>
-    </div>
+    <div id="fav-list"></div>
   </div>
 
   <div class="section">
@@ -621,64 +726,196 @@ document.getElementById('lon').addEventListener('keydown', e => { if(e.key==='En
 document.getElementById('fav-name').addEventListener('keydown', e => { if(e.key==='Enter') saveFavorite(); });
 
 // ── Favorites ─────────────────────────────────────────────
-let favData = [];
+let folderData = [];
+let selectedIcon = '🌸';
+let openFolders = new Set(); // tracks which folder indices are currently expanded
 
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// Icon picker
+function toggleIconPicker(e) {
+  e.stopPropagation();
+  const btn = document.getElementById('icon-btn');
+  const popup = document.getElementById('icon-picker');
+  const isOpen = popup.classList.contains('open');
+  popup.classList.toggle('open');
+  btn.classList.toggle('open', !isOpen);
+}
+document.addEventListener('click', () => {
+  document.getElementById('icon-picker').classList.remove('open');
+  document.getElementById('icon-btn').classList.remove('open');
+});
+function selectIcon(icon) {
+  selectedIcon = icon;
+  document.getElementById('icon-emoji').textContent = icon;
+  document.getElementById('icon-picker').classList.remove('open');
+  document.getElementById('icon-btn').classList.remove('open');
+}
+
 async function loadFavorites() {
   try {
     const res = await fetch('/favorites');
-    favData = await res.json();
+    folderData = (await res.json()).folders || [];
     renderFavorites();
+    renderFolderSelect();
   } catch(e) {}
+}
+
+function renderFolderSelect() {
+  const sel = document.getElementById('fav-folder');
+  const prev = parseInt(sel.value) || 0;
+  sel.innerHTML = folderData.map((f, i) =>
+    `<option value="${i}"${i===prev?' selected':''}>${escHtml(f.name)}</option>`
+  ).join('');
 }
 
 function renderFavorites() {
   const list = document.getElementById('fav-list');
-  const empty = document.getElementById('fav-empty');
-  list.querySelectorAll('.fav-item').forEach(el => el.remove());
-  if (favData.length === 0) { empty.style.display = 'block'; return; }
-  empty.style.display = 'none';
-  favData.forEach((f, i) => {
-    const div = document.createElement('div');
-    div.className = 'fav-item';
-    div.innerHTML =
-      `<div class="fav-info">` +
-        `<div class="fav-name">${escHtml(f.name)}</div>` +
-        `<div class="fav-coords">${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}</div>` +
+  if (folderData.length === 0) {
+    list.innerHTML = '<div id="fav-global-empty">No favorites saved yet</div>';
+    return;
+  }
+  list.innerHTML = folderData.map((folder, fi) => {
+    const isOpen = openFolders.has(fi);
+    const spotsHtml = folder.spots.length === 0
+      ? '<div class="fav-empty-folder">Empty</div>'
+      : folder.spots.map((s, si) =>
+          `<div class="fav-item">` +
+            `<span class="fav-icon">${s.icon || '📍'}</span>` +
+            `<div class="fav-info">` +
+              `<div class="fav-name">${escHtml(s.name)}</div>` +
+              `<div class="fav-coords">${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}</div>` +
+            `</div>` +
+            `<div class="fav-actions">` +
+              `<button class="btn-blue btn-sm" onclick="goToFavorite(${fi},${si})">Go</button>` +
+              `<button class="btn-gray btn-sm" onclick="deleteFavorite(${fi},${si})">✕</button>` +
+            `</div>` +
+          `</div>`
+        ).join('');
+    return `<div class="folder-group">` +
+      `<div class="folder-header" onclick="toggleFolder(${fi})">` +
+        `<span class="folder-toggle${isOpen ? '' : ' collapsed'}" id="folder-toggle-${fi}">▼</span>` +
+        `<span class="folder-name-text" id="folder-name-${fi}">${escHtml(folder.name)}</span>` +
+        `<button class="btn-icon" onclick="startRenameFolder(event,${fi})" title="Rename">✎</button>` +
+        `<button class="btn-icon" onclick="deleteFolder(event,${fi})" title="Delete folder">✕</button>` +
       `</div>` +
-      `<div class="fav-actions">` +
-        `<button class="btn-blue btn-sm" onclick="goToFavorite(${i})">Go</button>` +
-        `<button class="btn-gray btn-sm" onclick="deleteFavorite(${i})">✕</button>` +
-      `</div>`;
-    list.appendChild(div);
+      `<div class="folder-spots${isOpen ? ' open' : ''}" id="folder-spots-${fi}">${spotsHtml}</div>` +
+    `</div>`;
+  }).join('') + `<button class="add-folder-btn" onclick="addFolder()">+ New Folder</button>`;
+}
+
+function toggleFolder(fi) {
+  if (openFolders.has(fi)) {
+    openFolders.delete(fi);
+  } else {
+    openFolders.add(fi);
+  }
+  document.getElementById(`folder-spots-${fi}`).classList.toggle('open');
+  document.getElementById(`folder-toggle-${fi}`).classList.toggle('collapsed');
+}
+
+function startRenameFolder(e, fi) {
+  e.stopPropagation();
+  const nameEl = document.getElementById(`folder-name-${fi}`);
+  if (!nameEl || nameEl.tagName === 'INPUT') return;
+  const currentName = folderData[fi].name;
+  nameEl.outerHTML = `<input class="folder-name-input" id="folder-name-${fi}" value="${escHtml(currentName)}"` +
+    ` onblur="finishRenameFolder(${fi})"` +
+    ` onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape'){this.value='${escHtml(currentName)}';this.blur();}"` +
+    ` onclick="event.stopPropagation()">`;
+  const input = document.getElementById(`folder-name-${fi}`);
+  input.focus(); input.select();
+}
+
+async function finishRenameFolder(fi) {
+  const input = document.getElementById(`folder-name-${fi}`);
+  if (!input) return;
+  const name = input.value.trim() || folderData[fi].name;
+  await fetch('/folders/rename', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ folderIdx: fi, name })
   });
+  await loadFavorites();
+}
+
+async function deleteFolder(e, fi) {
+  e.stopPropagation();
+  if (folderData.length <= 1) return;
+  const f = folderData[fi];
+  const msg = f.spots.length > 0
+    ? `Delete folder "${f.name}" and all its ${f.spots.length} spot(s)?`
+    : `Delete folder "${f.name}"?`;
+  if (!confirm(msg)) return;
+  await fetch('/folders/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ folderIdx: fi })
+  });
+  // shift openFolders indices: remove deleted, slide down anything above it
+  const updated = new Set();
+  openFolders.forEach(idx => { if (idx < fi) updated.add(idx); else if (idx > fi) updated.add(idx - 1); });
+  openFolders = updated;
+  await loadFavorites();
+}
+
+function addFolder() {
+  const btn = document.querySelector('.add-folder-btn');
+  if (!btn) return;
+  btn.outerHTML =
+    `<div class="add-folder-inline" id="add-folder-inline">` +
+      `<input class="new-folder-input" id="new-folder-input" placeholder="Folder name…" ` +
+        `onkeydown="if(event.key==='Enter')confirmAddFolder();if(event.key==='Escape')cancelAddFolder()">` +
+      `<button class="btn-blue btn-sm" onclick="confirmAddFolder()">✓</button>` +
+      `<button class="btn-gray btn-sm" onclick="cancelAddFolder()">✕</button>` +
+    `</div>`;
+  document.getElementById('new-folder-input').focus();
+}
+
+async function confirmAddFolder() {
+  const input = document.getElementById('new-folder-input');
+  if (!input) return;
+  const name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  const newIdx = folderData.length; // index the new folder will have after server adds it
+  await fetch('/folders/add', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name })
+  });
+  openFolders.add(newIdx); // open the new folder so user sees it
+  await loadFavorites();
+}
+
+function cancelAddFolder() {
+  loadFavorites(); // re-render restores the button without saving
 }
 
 async function saveFavorite() {
   const nameEl = document.getElementById('fav-name');
   const name = nameEl.value.trim();
   if (!name) { nameEl.focus(); return; }
+  const folderIdx = parseInt(document.getElementById('fav-folder').value) || 0;
   await fetch('/favorites/add', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ name, lat: curLat, lon: curLon })
+    body: JSON.stringify({ icon: selectedIcon, name, lat: curLat, lon: curLon, folderIdx })
   });
   nameEl.value = '';
+  openFolders.add(folderIdx); // expand only the folder that received the new spot
   await loadFavorites();
 }
 
-async function deleteFavorite(idx) {
+async function deleteFavorite(fi, si) {
+  const spot = folderData[fi]?.spots[si];
+  if (!spot || !confirm(`Delete "${spot.name}"?`)) return;
   await fetch('/favorites/delete', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ index: idx })
+    body: JSON.stringify({ folderIdx: fi, spotIdx: si })
   });
   await loadFavorites();
 }
 
-async function goToFavorite(idx) {
-  const f = favData[idx];
+async function goToFavorite(fi, si) {
+  const f = folderData[fi]?.spots[si];
   if (!f) return;
   stopWalk();
   updateDisplay(f.lat, f.lon);
@@ -712,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == '/favorites':
-            data = json.dumps(favorites).encode()
+            data = json.dumps({'folders': folders}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -741,13 +978,37 @@ class Handler(BaseHTTPRequestHandler):
                 'status': controller.status if controller else 'No controller'
             }
         elif self.path == '/favorites/add':
-            favorites.append({'name': body['name'], 'lat': body['lat'], 'lon': body['lon']})
-            save_favorites()
+            fi = body.get('folderIdx', 0)
+            if 0 <= fi < len(folders):
+                folders[fi]['spots'].append({
+                    'icon': body.get('icon', '📍'),
+                    'name': body['name'],
+                    'lat': body['lat'],
+                    'lon': body['lon']
+                })
+                save_favorites()
             data = {'ok': True}
         elif self.path == '/favorites/delete':
-            idx = body.get('index', -1)
-            if 0 <= idx < len(favorites):
-                favorites.pop(idx)
+            fi = body.get('folderIdx', 0)
+            si = body.get('spotIdx', -1)
+            if 0 <= fi < len(folders) and 0 <= si < len(folders[fi]['spots']):
+                folders[fi]['spots'].pop(si)
+                save_favorites()
+            data = {'ok': True}
+        elif self.path == '/folders/add':
+            folders.append({'name': body.get('name', 'New Folder'), 'spots': []})
+            save_favorites()
+            data = {'ok': True}
+        elif self.path == '/folders/rename':
+            fi = body.get('folderIdx', -1)
+            if 0 <= fi < len(folders):
+                folders[fi]['name'] = body.get('name', folders[fi]['name'])
+                save_favorites()
+            data = {'ok': True}
+        elif self.path == '/folders/delete':
+            fi = body.get('folderIdx', -1)
+            if 0 <= fi < len(folders) and len(folders) > 1:
+                folders.pop(fi)
                 save_favorites()
             data = {'ok': True}
         else:  # /jump

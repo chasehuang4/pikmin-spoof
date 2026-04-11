@@ -1,1 +1,44 @@
-[]
+{
+  "folders": [
+    {
+      "name": "test",
+      "spots": [
+        {
+          "icon": "\ud83c\udf38",
+          "name": "test flower",
+          "lat": 25.045646440206074,
+          "lon": 121.53092801570892
+        },
+        {
+          "icon": "\ud83c\udf38",
+          "name": "testtest",
+          "lat": 25.04843605199308,
+          "lon": 121.53363704681396
+        },
+        {
+          "icon": "\ud83d\udcee",
+          "name": "taipei",
+          "lat": 25.04843605199308,
+          "lon": 121.53363704681396
+        },
+        {
+          "icon": "\ud83c\udf44",
+          "name": "hello",
+          "lat": 25.04843605199308,
+          "lon": 121.53363704681396
+        }
+      ]
+    },
+    {
+      "name": "General",
+      "spots": [
+        {
+          "icon": "\ud83d\udcee",
+          "name": "testtesttest taipei",
+          "lat": 25.039532400071796,
+          "lon": 121.51679277420044
+        }
+      ]
+    }
+  ]
+}

@@ -61,7 +61,7 @@ class LocationController:
                 async with DvtProvider(rsd) as dvt:
                     async with LocationSimulation(dvt) as loc:
                         self.connected = True
-                        self.status = 'Connected — ready'
+                        self.status = 'Phone connected successfully'
                         print('  Device connected. Ready to spoof.')
 
                         while True:
@@ -75,11 +75,10 @@ class LocationController:
                                 self._latest = None
 
                             await loc.set(lat, lon)
-                            self.status = f'📍 {lat:.5f}, {lon:.5f}'
 
         except Exception as e:
             self.connected = False
-            self.status = f'⚠️ {e}'
+            self.status = 'Phone disconnected'
             print(f'  Connection error: {e}')
 
 
@@ -125,13 +124,14 @@ body { display: flex; height: 100vh; background: #1c1c1e; color: #fff; overflow:
 }
 .panel-header {
   padding: 16px; border-bottom: 1px solid #3a3a3c;
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 14px;
 }
+.panel-header h1 { margin-bottom: 4px; }
 .panel-header h1 { font-size: 17px; font-weight: 700; }
-.section { padding: 14px 16px; border-bottom: 1px solid #3a3a3c; }
+.section { padding: 20px 16px; border-bottom: 1px solid #3a3a3c; }
 .section-label {
   font-size: 11px; font-weight: 600; color: #8e8e93;
-  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;
+  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 12px;
 }
 
 #status-bar {
@@ -147,7 +147,7 @@ body { display: flex; height: 100vh; background: #1c1c1e; color: #fff; overflow:
 #dot.connecting { background: #ff9f0a; }
 
 .field-label { font-size: 11px; color: #8e8e93; margin-bottom: 3px; }
-.input-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.input-row { display: flex; gap: 8px; margin-bottom: 16px; }
 .input-group { flex: 1; }
 input[type=text] {
   width: 100%; padding: 7px 10px;
@@ -155,10 +155,12 @@ input[type=text] {
   border-radius: 8px; color: #fff; font-size: 13px; outline: none;
 }
 input[type=text]:focus { border-color: #0a84ff; }
-.btn-row { display: flex; gap: 8px; }
+.btn-row { display: flex; gap: 8px; align-items: stretch; }
+.btn-row button { padding-top: 8px; padding-bottom: 8px; }
 button {
   padding: 8px 14px; border: none; border-radius: 8px;
   font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s;
+  display: inline-flex; align-items: center; justify-content: center; line-height: 1;
 }
 button:active { opacity: 0.7; }
 .btn-blue { background: #0a84ff; color: #fff; }
@@ -173,14 +175,14 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
 
 #joystick-wrap { display: flex; justify-content: center; padding-top: 4px; }
 #joystick {
-  position: relative; width: 150px; height: 150px;
+  position: relative; width: 110px; height: 110px;
   border-radius: 50%; background: #1c1c1e;
   border: 2px solid #3a3a3c; cursor: pointer; user-select: none;
 }
 #knob {
-  position: absolute; width: 54px; height: 54px;
+  position: absolute; width: 40px; height: 40px;
   border-radius: 50%; background: #0a84ff;
-  top: 48px; left: 48px;
+  top: 35px; left: 35px;
   box-shadow: 0 2px 12px rgba(10,132,255,0.5);
 }
 .dir {
@@ -211,14 +213,11 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
   pointer-events: none; line-height: 1.75;
   white-space: nowrap;
 }
-.recenter-btn {
-  width: 26px; height: 26px;
-  background: #fff; border: 1px solid rgba(0,0,0,0.2);
-  border-radius: 4px; color: #333; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  padding: 0; box-shadow: none;
+.leaflet-control-recenter {
+  background: #000 !important; color: #fff !important;
+  display: flex !important; align-items: center; justify-content: center;
 }
-.recenter-btn:hover { background: #f4f4f4; }
+.leaflet-control-recenter:hover { background: #333 !important; color: #fff !important; }
 .map-overlay .wp-badge {
   font-size: 12px; font-weight: 600; color: #0a84ff;
   margin-bottom: 4px; display: none;
@@ -242,6 +241,7 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
       <div id="dot" class="connecting"></div>
       <span id="status-text">Connecting to device...</span>
     </div>
+    <div id="status-coord" style="font-size:11px;color:#8e8e93;margin-top:14px;font-family:monospace;">📍 37.7749, -122.4194</div>
   </div>
 
   <div class="section">
@@ -257,8 +257,8 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
       </div>
     </div>
     <div class="btn-row">
-      <button class="btn-blue" onclick="jump()">Jump</button>
-      <button class="btn-gray" onclick="useCurrent()">Update Current Coordinate</button>
+      <button class="btn-blue btn-sm" onclick="jump()">Jump</button>
+      <button class="btn-gray btn-sm" onclick="useCurrent()">Update Current</button>
     </div>
     <div id="error-msg">Invalid — Lat: -90…90 · Lon: -180…180</div>
   </div>
@@ -338,12 +338,15 @@ overlayCtrl.addTo(map);
 
 const recenterCtrl = L.control({ position: 'topleft' });
 recenterCtrl.onAdd = () => {
-  const btn = L.DomUtil.create('button', 'recenter-btn');
-  btn.title = 'Center map on current position';
-  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="3"/><line x1="7" y1="0" x2="7" y2="4"/><line x1="7" y1="10" x2="7" y2="14"/><line x1="0" y1="7" x2="4" y2="7"/><line x1="10" y1="7" x2="14" y2="7"/></svg>';
-  L.DomEvent.disableClickPropagation(btn);
-  btn.addEventListener('click', () => map.setView([curLat, curLon], 16));
-  return btn;
+  const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+  const a = L.DomUtil.create('a', 'leaflet-control-recenter', container);
+  a.href = '#';
+  a.title = 'Center map on current position';
+  a.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="3"/><line x1="7" y1="0" x2="7" y2="4"/><line x1="7" y1="10" x2="7" y2="14"/><line x1="0" y1="7" x2="4" y2="7"/><line x1="10" y1="7" x2="14" y2="7"/></svg>';
+  L.DomEvent.disableClickPropagation(container);
+  L.DomEvent.on(a, 'click', L.DomEvent.preventDefault);
+  a.addEventListener('click', () => map.setView([curLat, curLon], 16));
+  return container;
 };
 recenterCtrl.addTo(map);
 
@@ -391,6 +394,8 @@ function updateDisplay(lat, lon) {
   curLat = lat; curLon = lon;
   marker.setLatLng([lat, lon]);
   map.panTo([lat, lon]);
+  const coordEl = document.getElementById('status-coord');
+  if (coordEl) coordEl.textContent = '📍 ' + lat.toFixed(5) + ', ' + lon.toFixed(5);
 }
 
 function showError(show) {

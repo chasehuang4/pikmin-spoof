@@ -11,6 +11,7 @@ Then open:  http://localhost:8765
 import argparse
 import asyncio
 import json
+import os
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -85,6 +86,24 @@ class LocationController:
 controller: LocationController | None = None
 
 
+# ── Favorites ──────────────────────────────────────────────────────────────────
+
+FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'favorites.json')
+favorites: list = []
+
+def load_favorites():
+    global favorites
+    try:
+        with open(FAVORITES_FILE) as f:
+            favorites = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        favorites = []
+
+def save_favorites():
+    with open(FAVORITES_FILE, 'w') as f:
+        json.dump(favorites, f, indent=2)
+
+
 # ── HTML ───────────────────────────────────────────────────────────────────────
 
 HTML = """<!DOCTYPE html>
@@ -146,7 +165,6 @@ button:active { opacity: 0.7; }
 .btn-gray { background: #3a3a3c; color: #fff; }
 .btn-red  { background: #ff453a; color: #fff; width: 100%; padding: 11px; font-size: 14px; }
 #error-msg { font-size: 11px; color: #ff453a; margin-top: 6px; display: none; }
-#coords-live { font-size: 11px; color: #636366; font-family: monospace; margin-top: 8px; }
 
 .speed-row { display: flex; align-items: center; gap: 10px; }
 input[type=range] { flex: 1; accent-color: #0a84ff; }
@@ -171,6 +189,40 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
 }
 .hint { font-size: 11px; color: #636366; text-align: center; margin-top: 8px; }
 #map { flex: 1; }
+.fav-save-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.fav-save-row input { flex: 1; }
+.fav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: #1c1c1e;
+  border-radius: 8px; margin-bottom: 6px;
+}
+.fav-info { flex: 1; min-width: 0; }
+.fav-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fav-coords { font-size: 10px; color: #636366; font-family: monospace; margin-top: 2px; }
+.fav-actions { display: flex; gap: 5px; flex-shrink: 0; }
+.btn-sm { padding: 5px 9px; font-size: 12px; }
+#fav-empty { font-size: 11px; color: #636366; text-align: center; padding: 4px 0; }
+.map-overlay {
+  background: rgba(28,28,30,0.82);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; padding: 8px 12px;
+  font-size: 11px; color: #ffffff;
+  pointer-events: none; line-height: 1.75;
+  white-space: nowrap;
+}
+.recenter-btn {
+  width: 26px; height: 26px;
+  background: #fff; border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 4px; color: #333; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; box-shadow: none;
+}
+.recenter-btn:hover { background: #f4f4f4; }
+.map-overlay .wp-badge {
+  font-size: 12px; font-weight: 600; color: #0a84ff;
+  margin-bottom: 4px; display: none;
+}
 </style>
 </head>
 <body>
@@ -206,10 +258,20 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
     </div>
     <div class="btn-row">
       <button class="btn-blue" onclick="jump()">Jump</button>
-      <button class="btn-gray" onclick="useCurrent()">Use Current</button>
+      <button class="btn-gray" onclick="useCurrent()">Update Current Coordinate</button>
     </div>
     <div id="error-msg">Invalid — Lat: -90…90 · Lon: -180…180</div>
-    <div id="coords-live"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Favorites</div>
+    <div class="fav-save-row">
+      <input type="text" id="fav-name" placeholder="Name this spot…">
+      <button class="btn-blue btn-sm" onclick="saveFavorite()">Save</button>
+    </div>
+    <div id="fav-list">
+      <div id="fav-empty">No favorites saved yet</div>
+    </div>
   </div>
 
   <div class="section">
@@ -232,7 +294,7 @@ input[type=range] { flex: 1; accent-color: #0a84ff; }
           <span class="dir" style="right:7px;top:50%;transform:translateY(-50%)">E</span>
           <div id="knob"></div>
         </div>
-        <div class="hint">Drag to move · Click map to walk there</div>
+        <div class="hint">Drag to move</div>
       </div>
     </div>
   </div>
@@ -252,11 +314,63 @@ const map = L.map('map').setView([37.7749, -122.4194], 16);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '© OpenStreetMap'
 }).addTo(map);
-const marker = L.marker([37.7749, -122.4194]).addTo(map);
+const marker = L.marker([37.7749, -122.4194], { draggable: true }).addTo(map);
+marker.on('dragstart', () => { stopWalk(); stopJoystick(); });
+marker.on('dragend', () => {
+  const { lat, lng } = marker.getLatLng();
+  updateDisplay(lat, lng);
+  sendLocation(lat, lng);
+  document.getElementById('lat').value = lat.toFixed(6);
+  document.getElementById('lon').value = lng.toFixed(6);
+});
+
+// ── Map overlay ───────────────────────────────────────────
+const overlayCtrl = L.control({ position: 'bottomleft' });
+overlayCtrl.onAdd = () => {
+  const div = L.DomUtil.create('div', 'map-overlay');
+  div.innerHTML =
+    '<div class="wp-badge" id="wp-badge"></div>' +
+    '<div>Click map — add waypoint</div>' +
+    '<div>Click numbered pin — remove</div>';
+  return div;
+};
+overlayCtrl.addTo(map);
+
+const recenterCtrl = L.control({ position: 'topleft' });
+recenterCtrl.onAdd = () => {
+  const btn = L.DomUtil.create('button', 'recenter-btn');
+  btn.title = 'Center map on current position';
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="3"/><line x1="7" y1="0" x2="7" y2="4"/><line x1="7" y1="10" x2="7" y2="14"/><line x1="0" y1="7" x2="4" y2="7"/><line x1="10" y1="7" x2="14" y2="7"/></svg>';
+  L.DomEvent.disableClickPropagation(btn);
+  btn.addEventListener('click', () => map.setView([curLat, curLon], 16));
+  return btn;
+};
+recenterCtrl.addTo(map);
+
+function updateWaypointCount() {
+  const el = document.getElementById('wp-badge');
+  if (!el) return;
+  if (waypoints.length > 0) {
+    el.textContent = waypoints.length + ' waypoint' + (waypoints.length === 1 ? '' : 's') + ' queued';
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
 
 let curLat = 37.7749, curLon = -122.4194, speed = 20; // km/h
-let jVec = { dx: 0, dy: 0 }, jTimer = null, jActive = false;
-let walkQueue = [], walkTimer = null, waypointMarkers = [], routeLine = null, destMarker = null;
+let jVec = { dx: 0, dy: 0 }, jRunning = false, jActive = false;
+let waypoints = [], walkActive = false, walkTarget = null, waypointMarkers = [], routeLine = null, leadLine = null;
+
+// ── Background-safe timer (Web Worker ignores tab visibility throttling) ───────
+const bgTick = new Worker(URL.createObjectURL(new Blob(
+  ['setInterval(()=>self.postMessage(null),100);'],
+  { type: 'application/javascript' }
+)));
+bgTick.onmessage = () => {
+  if (walkActive) tickWalk();
+  if (jRunning)   tickJoystick();
+};
 
 // ── Status polling ────────────────────────────────────────
 async function pollStatus() {
@@ -277,7 +391,6 @@ function updateDisplay(lat, lon) {
   curLat = lat; curLon = lon;
   marker.setLatLng([lat, lon]);
   map.panTo([lat, lon]);
-  document.getElementById('coords-live').textContent = lat.toFixed(6) + ', ' + lon.toFixed(6);
 }
 
 function showError(show) {
@@ -318,26 +431,82 @@ function stopSpoofing() {
   stopWalk();
 }
 
-// ── Walk-to ───────────────────────────────────────────────
-function startWalkTo(lat, lon) {
-  stopWalk();
-  walkTarget = { lat, lon };
-  if (destMarker) destMarker.setLatLng([lat, lon]);
-  else destMarker = L.circleMarker([lat, lon], {
-    radius: 9, color: '#ff9f0a', fillColor: '#ff9f0a',
-    fillOpacity: 0.45, weight: 2.5
-  }).addTo(map);
-  walkTimer = setInterval(tickWalk, 100);
+// ── Waypoint Route ────────────────────────────────────────
+function numberedIcon(n) {
+  return L.divIcon({
+    className: '',
+    html: `<div style="background:#0a84ff;color:#fff;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.5);cursor:pointer;">${n}</div>`,
+    iconSize: [26, 26], iconAnchor: [13, 13]
+  });
+}
+
+function updateRouteLine() {
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (waypoints.length >= 2) {
+    routeLine = L.polyline(waypoints.map(w => [w.lat, w.lon]), {
+      color: '#0a84ff', weight: 3, opacity: 0.65, dashArray: '8, 10'
+    }).addTo(map);
+  }
+}
+
+function updateLeadLine() {
+  if (leadLine) { map.removeLayer(leadLine); leadLine = null; }
+  if (waypoints.length > 0) {
+    leadLine = L.polyline([[curLat, curLon], [waypoints[0].lat, waypoints[0].lon]], {
+      color: '#0a84ff', weight: 3, opacity: 0.65, dashArray: '8, 10'
+    }).addTo(map);
+  }
+}
+
+function renumberMarkers() {
+  waypointMarkers.forEach((m, i) => m.setIcon(numberedIcon(i + 1)));
+}
+
+function removeWaypoint(idx) {
+  if (idx < 0 || idx >= waypoints.length) return;
+  waypoints.splice(idx, 1);
+  map.removeLayer(waypointMarkers[idx]);
+  waypointMarkers.splice(idx, 1);
+  renumberMarkers();
+  updateRouteLine();
+  updateLeadLine();
+  updateWaypointCount();
+  if (waypoints.length === 0) {
+    walkActive = false; walkTarget = null;
+  } else if (idx === 0) {
+    walkActive = false;
+    walkTarget = waypoints[0];
+    walkActive = true;
+  }
+}
+
+function addWaypoint(lat, lon) {
+  waypoints.push({ lat, lon });
+  const m = L.marker([lat, lon], { icon: numberedIcon(waypoints.length) }).addTo(map);
+  m.on('click', e => { L.DomEvent.stopPropagation(e); removeWaypoint(waypointMarkers.indexOf(m)); });
+  m.bindTooltip('Click to remove', { direction: 'top', offset: [0, -10] });
+  waypointMarkers.push(m);
+  updateRouteLine();
+  updateLeadLine();
+  updateWaypointCount();
+  if (!walkActive) {
+    walkTarget = waypoints[0];
+    walkActive = true;
+  }
 }
 
 function stopWalk() {
-  clearInterval(walkTimer); walkTimer = null; walkTarget = null;
-  if (destMarker) { map.removeLayer(destMarker); destMarker = null; }
+  walkActive = false; walkTarget = null;
+  waypointMarkers.forEach(m => map.removeLayer(m));
+  waypointMarkers = []; waypoints = [];
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  if (leadLine) { map.removeLayer(leadLine); leadLine = null; }
+  updateWaypointCount();
 }
 
 function tickWalk() {
   if (!walkTarget) { stopWalk(); return; }
-  const mpt = (speed / 3.6) * 0.1; // meters per 100ms tick
+  const mpt = (speed / 3.6) * 0.1;
   const latDeg = 111000;
   const lonDeg = 111000 * Math.cos(curLat * Math.PI / 180);
   const dLat = walkTarget.lat - curLat;
@@ -346,7 +515,17 @@ function tickWalk() {
   if (distM <= mpt) {
     updateDisplay(walkTarget.lat, walkTarget.lon);
     sendLocation(walkTarget.lat, walkTarget.lon);
-    stopWalk();
+    map.removeLayer(waypointMarkers[0]);
+    waypoints.shift(); waypointMarkers.shift();
+    renumberMarkers(); updateRouteLine(); updateWaypointCount();
+    walkActive = false;
+    if (waypoints.length > 0) {
+      walkTarget = waypoints[0];
+      walkActive = true;
+    } else {
+      walkTarget = null;
+    }
+    updateLeadLine();
     return;
   }
   const ratio = mpt / distM;
@@ -354,12 +533,13 @@ function tickWalk() {
   const newLon = curLon + dLon * ratio;
   updateDisplay(newLat, newLon);
   sendLocation(newLat, newLon);
+  updateLeadLine();
 }
 
 map.on('click', e => {
   document.getElementById('lat').value = e.latlng.lat.toFixed(6);
   document.getElementById('lon').value = e.latlng.lng.toFixed(6);
-  startWalkTo(e.latlng.lat, e.latlng.lng);
+  addWaypoint(e.latlng.lat, e.latlng.lng);
 });
 
 // ── Joystick ──────────────────────────────────────────────
@@ -387,8 +567,8 @@ joystick.addEventListener('mousedown', e => { stopWalk(); jActive=true; moveKnob
 document.addEventListener('mousemove', e => { if(jActive) moveKnob(e); });
 document.addEventListener('mouseup', () => { if(!jActive) return; jActive=false; resetKnob(); stopJoystick(); });
 
-function startJoystick() { if(jTimer) return; jTimer = setInterval(tickJoystick, 100); }
-function stopJoystick()  { clearInterval(jTimer); jTimer=null; }
+function startJoystick() { jRunning = true; }
+function stopJoystick()  { jRunning = false; }
 
 function tickJoystick() {
   if(jVec.dx===0 && jVec.dy===0) return;
@@ -403,6 +583,76 @@ function tickJoystick() {
 
 document.getElementById('lat').addEventListener('keydown', e => { if(e.key==='Enter') jump(); });
 document.getElementById('lon').addEventListener('keydown', e => { if(e.key==='Enter') jump(); });
+document.getElementById('fav-name').addEventListener('keydown', e => { if(e.key==='Enter') saveFavorite(); });
+
+// ── Favorites ─────────────────────────────────────────────
+let favData = [];
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadFavorites() {
+  try {
+    const res = await fetch('/favorites');
+    favData = await res.json();
+    renderFavorites();
+  } catch(e) {}
+}
+
+function renderFavorites() {
+  const list = document.getElementById('fav-list');
+  const empty = document.getElementById('fav-empty');
+  list.querySelectorAll('.fav-item').forEach(el => el.remove());
+  if (favData.length === 0) { empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  favData.forEach((f, i) => {
+    const div = document.createElement('div');
+    div.className = 'fav-item';
+    div.innerHTML =
+      `<div class="fav-info">` +
+        `<div class="fav-name">${escHtml(f.name)}</div>` +
+        `<div class="fav-coords">${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}</div>` +
+      `</div>` +
+      `<div class="fav-actions">` +
+        `<button class="btn-blue btn-sm" onclick="goToFavorite(${i})">Go</button>` +
+        `<button class="btn-gray btn-sm" onclick="deleteFavorite(${i})">✕</button>` +
+      `</div>`;
+    list.appendChild(div);
+  });
+}
+
+async function saveFavorite() {
+  const nameEl = document.getElementById('fav-name');
+  const name = nameEl.value.trim();
+  if (!name) { nameEl.focus(); return; }
+  await fetch('/favorites/add', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, lat: curLat, lon: curLon })
+  });
+  nameEl.value = '';
+  await loadFavorites();
+}
+
+async function deleteFavorite(idx) {
+  await fetch('/favorites/delete', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ index: idx })
+  });
+  await loadFavorites();
+}
+
+async function goToFavorite(idx) {
+  const f = favData[idx];
+  if (!f) return;
+  stopWalk();
+  updateDisplay(f.lat, f.lon);
+  document.getElementById('lat').value = f.lat.toFixed(6);
+  document.getElementById('lon').value = f.lon.toFixed(6);
+  await sendLocation(f.lat, f.lon);
+}
+
+loadFavorites();
 </script>
 </body>
 </html>"""
@@ -415,6 +665,13 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path == '/favorites':
+            data = json.dumps(favorites).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(data)
+            return
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
@@ -429,6 +686,16 @@ class Handler(BaseHTTPRequestHandler):
                 'connected': controller.connected if controller else False,
                 'status': controller.status if controller else 'No controller'
             }
+        elif self.path == '/favorites/add':
+            favorites.append({'name': body['name'], 'lat': body['lat'], 'lon': body['lon']})
+            save_favorites()
+            data = {'ok': True}
+        elif self.path == '/favorites/delete':
+            idx = body.get('index', -1)
+            if 0 <= idx < len(favorites):
+                favorites.pop(idx)
+                save_favorites()
+            data = {'ok': True}
         else:  # /jump
             lat, lon = body['lat'], body['lon']
             if controller:
@@ -453,6 +720,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     rsd_host, rsd_port = args.rsd[0], int(args.rsd[1])
+    load_favorites()
     controller = LocationController(rsd_host, rsd_port)
 
     port = 8765

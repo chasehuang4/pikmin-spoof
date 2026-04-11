@@ -1,11 +1,6 @@
 import SwiftUI
 import MapKit
 
-struct MapPin: Identifiable {
-    let id = UUID()
-    var coordinate: CLLocationCoordinate2D
-}
-
 struct ContentView: View {
     @StateObject private var spoofer = LocationSpoofer()
 
@@ -16,9 +11,8 @@ struct ContentView: View {
         center: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
         span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
     )
-    @State private var pins: [MapPin] = [
-        MapPin(coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194))
-    ]
+    @State private var isDraggingPin = false
+    @State private var pinDragPosition: CGPoint = .zero
 
     var body: some View {
         HStack(spacing: 0) {
@@ -84,7 +78,6 @@ struct ContentView: View {
                                 if let lat = Double(latText), let lon = Double(lonText),
                                    (-90...90).contains(lat), (-180...180).contains(lon) {
                                     spoofer.jumpTo(latitude: lat, longitude: lon)
-                                    updateMap(to: spoofer.coordinate)
                                     showError = false
                                 } else {
                                     showError = true
@@ -161,38 +154,76 @@ struct ContentView: View {
             Divider()
 
             // MARK: Map
-            Map(coordinateRegion: $mapRegion, annotationItems: pins) { pin in
-                MapMarker(coordinate: pin.coordinate, tint: .red)
-            }
-            .overlay {
-                GeometryReader { geo in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { location in
-                            let lat = mapRegion.center.latitude
-                                + mapRegion.span.latitudeDelta * (0.5 - Double(location.y / geo.size.height))
-                            let lon = mapRegion.center.longitude
-                                + mapRegion.span.longitudeDelta * (Double(location.x / geo.size.width) - 0.5)
-                            spoofer.jumpTo(latitude: lat, longitude: lon)
+            Map(coordinateRegion: $mapRegion)
+                .overlay {
+                    GeometryReader { geo in
+                        ZStack {
+                            // Double-tap layer — jump to double-clicked coordinate
+                            Color.clear
+                                .contentShape(Rectangle())
+                                .onTapGesture(count: 2) { location in
+                                    let coord = mapCoordinate(from: location, in: geo.size)
+                                    spoofer.jumpTo(latitude: coord.latitude, longitude: coord.longitude)
+                                }
+
+                            // Draggable current-position pin
+                            let pinPos = screenPosition(for: spoofer.coordinate, in: geo.size)
+                            if pinPos.x > -30 && pinPos.x < geo.size.width + 30 &&
+                               pinPos.y > -30 && pinPos.y < geo.size.height + 30 {
+                                Image(systemName: "location.circle.fill")
+                                    .font(.system(size: 28))
+                                    .foregroundColor(.blue)
+                                    .shadow(color: .black.opacity(0.3), radius: 3, x: 0, y: 2)
+                                    .position(isDraggingPin ? pinDragPosition : pinPos)
+                                    .gesture(
+                                        DragGesture(minimumDistance: 5)
+                                            .onChanged { value in
+                                                isDraggingPin = true
+                                                pinDragPosition = value.location
+                                            }
+                                            .onEnded { value in
+                                                isDraggingPin = false
+                                                let newCoord = mapCoordinate(from: value.location, in: geo.size)
+                                                spoofer.jumpTo(latitude: newCoord.latitude, longitude: newCoord.longitude)
+                                            }
+                                    )
+                            }
                         }
+                    }
                 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                Text("📍 \(String(format: "%.5f", spoofer.coordinate.latitude)), \(String(format: "%.5f", spoofer.coordinate.longitude))")
-                    .font(.caption.monospacedDigit())
-                    .padding(6)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .padding(12)
-            }
+                .overlay(alignment: .bottomTrailing) {
+                    Text("📍 \(String(format: "%.5f", spoofer.coordinate.latitude)), \(String(format: "%.5f", spoofer.coordinate.longitude))")
+                        .font(.caption.monospacedDigit())
+                        .padding(6)
+                        .background(.thinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .padding(12)
+                }
         }
         .onChange(of: spoofer.coordinate) { newCoord in
-            updateMap(to: newCoord)
+            if !isDraggingPin {
+                updateMap(to: newCoord)
+            }
         }
     }
 
+    // MARK: - Helpers
+
+    /// Convert a map coordinate to its screen position within the given size.
+    private func screenPosition(for coordinate: CLLocationCoordinate2D, in size: CGSize) -> CGPoint {
+        let x = ((coordinate.longitude - mapRegion.center.longitude) / mapRegion.span.longitudeDelta + 0.5) * size.width
+        let y = (0.5 - (coordinate.latitude - mapRegion.center.latitude) / mapRegion.span.latitudeDelta) * size.height
+        return CGPoint(x: x, y: y)
+    }
+
+    /// Convert a screen point to a map coordinate.
+    private func mapCoordinate(from point: CGPoint, in size: CGSize) -> CLLocationCoordinate2D {
+        let lat = mapRegion.center.latitude + mapRegion.span.latitudeDelta * (0.5 - Double(point.y / size.height))
+        let lon = mapRegion.center.longitude + mapRegion.span.longitudeDelta * (Double(point.x / size.width) - 0.5)
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
     private func updateMap(to coordinate: CLLocationCoordinate2D) {
-        pins = [MapPin(coordinate: coordinate)]
         withAnimation {
             mapRegion.center = coordinate
         }

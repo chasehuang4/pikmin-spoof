@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -1027,6 +1028,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
 
+def _free_port(port):
+    import subprocess
+    result = subprocess.run(['lsof', '-ti', f':{port}'], capture_output=True, text=True)
+    pids = result.stdout.strip().split()
+    if pids:
+        print(f'  Stopping previous instance (PID {", ".join(pids)})...')
+        for pid in pids:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
 # ── Entry Point ────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -1040,6 +1054,8 @@ if __name__ == '__main__':
     controller = LocationController(rsd_host, rsd_port)
 
     port = 8765
+    _free_port(port)
+    HTTPServer.allow_reuse_address = True
     server = HTTPServer(('localhost', port), Handler)
 
     print()

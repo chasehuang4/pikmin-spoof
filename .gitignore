@@ -2,3 +2,5 @@
 __pycache__/
 *.pyc
 .DS_Store
+favorites.json
+last_position.json
